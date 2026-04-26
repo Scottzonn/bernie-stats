@@ -5,6 +5,23 @@ export const PARAM_NAMES = ['Bottom', 'Top', 'EC50', 'IC50', 'Hill1', 'Hill2'];
 const N_STARTS = 10;
 const PRNG_SEED = 0x42424242;
 
+// Wide-open values used when a parameter is "Unconstrained" by the user.
+export const UNCONSTRAINED_HILL_MIN = 0.01;
+export const UNCONSTRAINED_HILL_MAX = 1000;
+export const UNCONSTRAINED_CONC_MIN = 1e-9;   // nM
+export const UNCONSTRAINED_CONC_MAX = 1e9;    // nM
+
+// Default Hill bounds when caller doesn't supply them.
+export const DEFAULT_HILL_MIN = 0.5;
+export const DEFAULT_HILL_MAX = 4;
+
+// Data-derived defaults for EC50 and IC50 are
+//   min = xMin / DATA_FACTOR_BELOW, max = xMax * DATA_FACTOR_ABOVE
+// chosen so the optimizer has plenty of room outside the measured range
+// without being completely unbounded.
+export const DEFAULT_CONC_FACTOR_BELOW = 100;
+export const DEFAULT_CONC_FACTOR_ABOVE = 100;
+
 function bellModel([Bottom, Top, EC50, IC50, Hill1, Hill2]) {
   return (x) => {
     if (!(x > 0) || EC50 <= 0 || IC50 <= 0) return Bottom;
@@ -13,12 +30,6 @@ function bellModel([Bottom, Top, EC50, IC50, Hill1, Hill2]) {
     if (!isFinite(a) || !isFinite(b)) return Bottom;
     return Bottom + (Top - Bottom) * (a / (1 + a)) * (1 / (1 + b));
   };
-}
-
-function bellModelInternal(intParams) {
-  const [Bottom, Top, EC50, logRatio, Hill1, Hill2] = intParams;
-  const IC50 = EC50 * Math.exp(logRatio);
-  return bellModel([Bottom, Top, EC50, IC50, Hill1, Hill2]);
 }
 
 function evalAt(params, xs) {
@@ -47,22 +58,81 @@ function mulberry32(seed) {
 }
 
 // Sample one random starting point inside the bounds.
-// Internal param order: [Bottom, Top, EC50, logRatio, Hill1, Hill2].
-// EC50 is log-uniform (orders of magnitude); others are uniform.
+// Param order: [Bottom, Top, EC50, IC50, Hill1, Hill2].
+// EC50 and IC50 are log-uniform (orders of magnitude); others are uniform.
 function randomStart(minVals, maxVals, rng) {
   const u = (lo, hi) => lo + rng() * (hi - lo);
   const logU = (lo, hi) => Math.exp(Math.log(lo) + rng() * (Math.log(hi) - Math.log(lo)));
-  return [
+  const start = [
     u(minVals[0], maxVals[0]),
     u(minVals[1], maxVals[1]),
     logU(minVals[2], maxVals[2]),
-    u(minVals[3], maxVals[3]),
+    logU(minVals[3], maxVals[3]),
     u(minVals[4], maxVals[4]),
     u(minVals[5], maxVals[5]),
   ];
+  // Geometrically valid bell needs IC50 > EC50; nudge if random sample violated it.
+  if (start[3] <= start[2]) start[3] = start[2] * 1.05;
+  return start;
 }
 
-export function fitSample(xRaw, yRaw) {
+// Resolve user-provided options into concrete (min, max) pairs for each parameter.
+// `options` shape:
+//   { hill1: {min, max, unconstrained}, hill2: {...},
+//     ec50:  {min, max, unconstrained}, ic50:  {...} }
+// Any field can be missing/blank → fall back to data-derived or biological defaults.
+function resolveBounds(options, xMin, xMax, yMinScaled) {
+  const opts = options || {};
+  const h1 = opts.hill1 || {};
+  const h2 = opts.hill2 || {};
+  const ec = opts.ec50 || {};
+  const ic = opts.ic50 || {};
+
+  const num = (v) => Number.isFinite(v) ? v : null;
+
+  // Hill1
+  const hill1Min = h1.unconstrained ? UNCONSTRAINED_HILL_MIN : (num(h1.min) ?? DEFAULT_HILL_MIN);
+  const hill1Max = h1.unconstrained ? UNCONSTRAINED_HILL_MAX : (num(h1.max) ?? DEFAULT_HILL_MAX);
+
+  // Hill2
+  const hill2Min = h2.unconstrained ? UNCONSTRAINED_HILL_MIN : (num(h2.min) ?? DEFAULT_HILL_MIN);
+  const hill2Max = h2.unconstrained ? UNCONSTRAINED_HILL_MAX : (num(h2.max) ?? DEFAULT_HILL_MAX);
+
+  // EC50 — defaults derived from data range.
+  const defaultEc50Min = xMin / DEFAULT_CONC_FACTOR_BELOW;
+  const defaultEc50Max = xMax * DEFAULT_CONC_FACTOR_ABOVE;
+  const ec50Min = ec.unconstrained ? UNCONSTRAINED_CONC_MIN : (num(ec.min) ?? defaultEc50Min);
+  const ec50Max = ec.unconstrained ? UNCONSTRAINED_CONC_MAX : (num(ec.max) ?? defaultEc50Max);
+
+  // IC50 — same default scheme as EC50.
+  const ic50Min = ic.unconstrained ? UNCONSTRAINED_CONC_MIN : (num(ic.min) ?? defaultEc50Min);
+  const ic50Max = ic.unconstrained ? UNCONSTRAINED_CONC_MAX : (num(ic.max) ?? defaultEc50Max);
+
+  // Bottom and Top stay data-derived (not user-editable per Round 4 scope).
+  const bottomMin = 0;
+  const bottomMax = yMinScaled + 1;
+  const topMin = yMinScaled;
+  const topMax = 30;
+
+  // Per-parameter unconstrained flags, aligned with PARAM_NAMES order
+  // [Bottom, Top, EC50, IC50, Hill1, Hill2]. Bottom/Top are not user-editable.
+  const unconstrainedMask = [
+    false,
+    false,
+    !!ec.unconstrained,
+    !!ic.unconstrained,
+    !!h1.unconstrained,
+    !!h2.unconstrained,
+  ];
+
+  return {
+    minValues: [bottomMin, topMin, ec50Min, ic50Min, hill1Min, hill2Min],
+    maxValues: [bottomMax, topMax, ec50Max, ic50Max, hill1Max, hill2Max],
+    unconstrainedMask,
+  };
+}
+
+export function fitSample(xRaw, yRaw, options) {
   const pts = [];
   for (let i = 0; i < xRaw.length; i++) {
     const xi = xRaw[i], yi = yRaw[i];
@@ -106,33 +176,19 @@ export function fitSample(xRaw, yRaw) {
   const ysScaled = ys.map(v => v / yScale);
   const yMinScaled = yMin / yScale;
 
-  const heuristicEC50 = Math.max(0.3 * peakX, xMin / 10);
-  const heuristicIC50 = Math.max(3 * peakX, xMin * 1.5);
-  const heuristicLogRatio = Math.max(Math.log(heuristicIC50 / heuristicEC50), Math.log(1.5));
+  const { minValues, maxValues, unconstrainedMask } = resolveBounds(options, xMin, xMax, yMinScaled);
 
+  // Heuristic start (clamped to user bounds so we never propose out-of-range values).
+  const heuristicEC50 = clamp1(Math.max(0.3 * peakX, xMin / 10), minValues[2], maxValues[2]);
+  let heuristicIC50 = clamp1(Math.max(3 * peakX, xMin * 1.5), minValues[3], maxValues[3]);
+  if (heuristicIC50 <= heuristicEC50) heuristicIC50 = Math.min(heuristicEC50 * 3, maxValues[3]);
   const heuristicStart = [
     Math.max(0, yMinScaled),
-    2.5,
+    clamp1(2.5, minValues[1], maxValues[1]),
     heuristicEC50,
-    heuristicLogRatio,
-    1,
-    1,
-  ];
-  const minValues = [
-    0,
-    yMinScaled,
-    xMin / 100,
-    Math.log(1.05),
-    0.5,
-    0.5,
-  ];
-  const maxValues = [
-    yMinScaled + 1,
-    30,
-    xMax * 100,
-    Math.log(1000),
-    4,
-    4,
+    heuristicIC50,
+    clamp1(1, minValues[4], maxValues[4]),
+    clamp1(1, minValues[5], maxValues[5]),
   ];
 
   // Multi-start: heuristic guess + (N-1) random starts. Keep best by parameterError.
@@ -149,9 +205,11 @@ export function fitSample(xRaw, yRaw) {
   const candidates = [];
   let lastError = '';
   for (let attempt = 0; attempt < N_STARTS; attempt++) {
-    const start = attempt === 0 ? heuristicStart : clampToBounds(randomStart(minValues, maxValues, rng), minValues, maxValues);
+    const start = attempt === 0
+      ? heuristicStart
+      : clampToBounds(randomStart(minValues, maxValues, rng), minValues, maxValues);
     try {
-      const res = LM(data, bellModelInternal, { ...lmOpts, initialValues: start });
+      const res = LM(data, bellModel, { ...lmOpts, initialValues: start });
       if (res && Array.isArray(res.parameterValues) && Number.isFinite(res.parameterError)) {
         candidates.push(res);
       }
@@ -172,30 +230,22 @@ export function fitSample(xRaw, yRaw) {
     result = candidates[0];
   }
 
-  const intScaled = result.parameterValues;
-  const extScaled = [
-    intScaled[0],
-    intScaled[1],
-    intScaled[2],
-    intScaled[2] * Math.exp(intScaled[3]),
-    intScaled[4],
-    intScaled[5],
-  ];
-  const ext = extScaled.slice();
-  ext[0] = extScaled[0] * yScale;
-  ext[1] = extScaled[1] * yScale;
+  // Unscale Bottom and Top back to original Y units; EC50, IC50, Hill1, Hill2 unchanged.
+  const fitted = result.parameterValues.slice();
+  fitted[0] = fitted[0] * yScale;
+  fitted[1] = fitted[1] * yScale;
 
-  const yhat = evalAt(ext, xs);
+  const yhat = evalAt(fitted, xs);
   const ssRes = ys.reduce((s, yi, i) => s + (yi - yhat[i]) ** 2, 0);
   const yMean = ys.reduce((s, v) => s + v, 0) / ys.length;
   const ssTot = ys.reduce((s, v) => s + (v - yMean) ** 2, 0);
   const r2 = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
 
-  const xpeak = findPeak(ext, xMin, xMax);
-  const boundaryHits = detectBoundaryHits(intScaled, minValues, maxValues);
-  const params = paramsObj(ext);
+  const xpeak = findPeak(fitted, xMin, xMax);
+  const boundaryHits = detectBoundaryHits(result.parameterValues, minValues, maxValues, unconstrainedMask);
+  const params = paramsObj(fitted);
   const constraintOk = params.IC50 > params.EC50;
-  const errors = computeStandardErrors(ext, xs, ys);
+  const errors = computeStandardErrors(fitted, xs, ys);
 
   const widthLinear = Number.isFinite(params.IC50) && Number.isFinite(params.EC50) ? params.IC50 - params.EC50 : NaN;
   const widthFold = Number.isFinite(params.IC50) && Number.isFinite(params.EC50) && params.EC50 > 0 ? params.IC50 / params.EC50 : NaN;
@@ -217,24 +267,32 @@ export function fitSample(xRaw, yRaw) {
   };
 }
 
+function clamp1(v, lo, hi) {
+  return Math.min(Math.max(v, lo), hi);
+}
 
 function clampToBounds(p, lo, hi) {
   return p.map((v, i) => Math.min(Math.max(v, lo[i]), hi[i]));
 }
 
-function detectBoundaryHits(intParams, minVals, maxVals) {
-  // Internal order: [Bottom, Top, EC50, logRatio, Hill1, Hill2].
-  // EC50 has log-decade bounds → use log-space tolerance.
-  // logRatio is already a log-space parameter (= log(IC50/EC50)) with a
-  // narrow linear range; use linear tolerance there.
-  // Everyone else has a narrow linear range; use linear tolerance.
-  // logRatio at bound is reported to the user as "IC50" (a tight ratio
-  // means IC50 ≈ EC50; a wide ratio means IC50 ≫ all measured X).
+function detectBoundaryHits(params, minVals, maxVals, unconstrainedMask) {
+  // Param order: [Bottom, Top, EC50, IC50, Hill1, Hill2].
+  // EC50 and IC50 have log-spread bounds — use log-space tolerance so a small
+  // EC50 isn't falsely flagged near the (very small) lower bound.
+  // Parameters the user explicitly marked Unconstrained are skipped — the
+  // wide bounds we pass to the optimizer in that case are an internal
+  // implementation detail; hitting them isn't a constraint the user cares about.
+  // Bottom and Top are skipped too: they're not user-editable, so a flag on
+  // them is purely noise — degenerate Top fits are surfaced via the huge
+  // standard errors instead, which is the meaningful diagnostic.
   const labelByIdx = ['Bottom', 'Top', 'EC50', 'IC50', 'Hill1', 'Hill2'];
-  const useLogTol = [false, false, true, false, false, false];
+  const useLogTol = [false, false, true, true, false, false];
+  const skipAlways = [true, true, false, false, false, false];
   const hits = [];
-  for (let i = 0; i < intParams.length; i++) {
-    const v = intParams[i], lo = minVals[i], hi = maxVals[i];
+  for (let i = 0; i < params.length; i++) {
+    if (skipAlways[i]) continue;
+    if (unconstrainedMask && unconstrainedMask[i]) continue;
+    const v = params[i], lo = minVals[i], hi = maxVals[i];
     if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
     let atLo, atHi;
     if (useLogTol[i] && lo > 0 && v > 0) {

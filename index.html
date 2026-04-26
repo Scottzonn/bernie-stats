@@ -19,6 +19,46 @@
     <input type="file" id="file" accept=".xlsx,.xls" hidden>
   </section>
 
+  <details id="advanced-settings" class="advanced">
+    <summary>Advanced settings — fitting constraints</summary>
+    <p class="advanced-intro">Bounds the optimizer respects when fitting each curve. Leave blank to use sensible defaults; tick "Unconstrained" to remove a bound entirely. Settings persist in this browser. <em>IC50 &gt; EC50 is always enforced — required for a bell shape.</em></p>
+    <div class="bounds-grid">
+      <div class="bounds-row" data-param="hill1">
+        <label class="bounds-label">Hill1</label>
+        <label class="bounds-input">min <input type="number" step="0.1" min="0" data-bound="min" placeholder="0.5"></label>
+        <label class="bounds-input">max <input type="number" step="0.1" min="0" data-bound="max" placeholder="4"></label>
+        <label class="bounds-uncon"><input type="checkbox" data-bound="unconstrained"> Unconstrained</label>
+        <span class="bounds-error" data-error></span>
+      </div>
+      <div class="bounds-row" data-param="hill2">
+        <label class="bounds-label">Hill2</label>
+        <label class="bounds-input">min <input type="number" step="0.1" min="0" data-bound="min" placeholder="0.5"></label>
+        <label class="bounds-input">max <input type="number" step="0.1" min="0" data-bound="max" placeholder="4"></label>
+        <label class="bounds-uncon"><input type="checkbox" data-bound="unconstrained"> Unconstrained</label>
+        <span class="bounds-error" data-error></span>
+      </div>
+      <div class="bounds-row" data-param="ec50">
+        <label class="bounds-label">EC50 (nM)</label>
+        <label class="bounds-input">min <input type="number" step="any" min="0" data-bound="min" placeholder="auto"></label>
+        <label class="bounds-input">max <input type="number" step="any" min="0" data-bound="max" placeholder="auto"></label>
+        <label class="bounds-uncon"><input type="checkbox" data-bound="unconstrained"> Unconstrained</label>
+        <span class="bounds-error" data-error></span>
+      </div>
+      <div class="bounds-row" data-param="ic50">
+        <label class="bounds-label">IC50 (nM)</label>
+        <label class="bounds-input">min <input type="number" step="any" min="0" data-bound="min" placeholder="auto"></label>
+        <label class="bounds-input">max <input type="number" step="any" min="0" data-bound="max" placeholder="auto"></label>
+        <label class="bounds-uncon"><input type="checkbox" data-bound="unconstrained"> Unconstrained</label>
+        <span class="bounds-error" data-error></span>
+      </div>
+    </div>
+    <div class="advanced-actions">
+      <button id="refit-btn" type="button" disabled>Re-fit with current settings</button>
+      <button id="reset-bounds-btn" type="button" class="secondary">Reset to defaults</button>
+      <span id="advanced-status" class="advanced-status"></span>
+    </div>
+  </details>
+
   <section id="error" class="error hidden"></section>
 
   <section id="info" class="info hidden">

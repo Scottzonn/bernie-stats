@@ -61,6 +61,103 @@ h2 { margin-top: 32px; margin-bottom: 8px; font-size: 18px; }
 }
 .scale-toggle input { margin-right: 4px; vertical-align: middle; }
 
+.advanced {
+  margin: 14px 0 0;
+  padding: 12px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fafafa;
+}
+.advanced > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: #333;
+  user-select: none;
+}
+.advanced[open] > summary { margin-bottom: 10px; }
+.advanced-intro {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+  margin: 6px 0 12px;
+}
+.advanced-intro em { color: #444; }
+.bounds-grid { display: flex; flex-direction: column; gap: 8px; }
+.bounds-row {
+  display: grid;
+  grid-template-columns: 100px 130px 130px 160px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #eee;
+}
+.bounds-row:last-child { border-bottom: none; }
+.bounds-label { font-weight: 600; font-size: 13px; color: #333; }
+.bounds-input {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bounds-input input {
+  width: 80px;
+  padding: 4px 6px;
+  font-size: 13px;
+  border: 1px solid #c9c9c9;
+  border-radius: 4px;
+  background: #fff;
+}
+.bounds-input input:disabled {
+  background: #f0f0f0;
+  color: #999;
+  cursor: not-allowed;
+}
+.bounds-input input.invalid {
+  border-color: #c00;
+  background: #fff5f5;
+}
+.bounds-uncon {
+  font-size: 12px;
+  color: #555;
+  user-select: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.bounds-error {
+  font-size: 12px;
+  color: #777;
+}
+.bounds-error.is-error {
+  color: #c00;
+  font-weight: 500;
+}
+.advanced-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.advanced-actions button.secondary {
+  background: #fff;
+  color: #333;
+  border: 1px solid #c9c9c9;
+}
+.advanced-actions button.secondary:hover { background: #f0f0f0; }
+.advanced-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.advanced-status {
+  font-size: 12px;
+  color: #666;
+}
+.advanced-status.success { color: #1f7a3a; }
+
 .model-ref {
   background: #f4f7fc;
   border: 1px solid #d4e0ee;

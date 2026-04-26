@@ -75,6 +75,25 @@ One column per compound.
 - Xpeak is computed numerically from the fitted curve on a 5000-point log-spaced grid — there is no closed-form expression for the peak of a product of two sigmoids.
 - Standard errors come from the Jacobian at the solution: `σ = √(diag((JᵀJ)⁻¹) × residual_variance)`.
 
+## Advanced settings (fitting constraints)
+
+The collapsed **Advanced settings** panel above the dropzone lets you change the bounds the optimizer respects when fitting each curve. Defaults are shown as placeholder text in each input.
+
+| Parameter | Default | When to widen |
+|---|---|---|
+| Hill1 | 0.5 to 4 | Your assay genuinely produces sharper rising sigmoids than biology typically does. |
+| Hill2 | 0.5 to 4 | Hooks sharper than ~5-fold drop per concentration step (rare). |
+| EC50 | data-derived (xMin/100 to xMax·100) | Almost never. |
+| IC50 | data-derived (xMin/100 to xMax·100) | Almost never. |
+
+Tick **"Unconstrained"** on a row to remove that parameter's bounds entirely (the optimizer will be given a `[1e-9, 1e9]` window for concentrations or `[0.01, 1000]` for Hill).
+
+`IC50 > EC50` is always enforced as a post-fit check — required for the result to be a real bell shape. If a fit ends up with IC50 ≤ EC50, the row is flagged.
+
+After changing settings, click **"Re-fit with current settings"** inside the panel to re-run the fit on the currently-loaded data without re-uploading.
+
+Settings persist in your browser via `localStorage`. Click **"Reset to defaults"** to clear them.
+
 ## Caveats
 
 - The model is empirical, not mechanistic. It does **not** give cooperativity (α) or true binding constants. Use it for ranking, not for biophysics.

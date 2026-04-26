@@ -1,5 +1,11 @@
 import { parseXlsx, exportCsv } from './io.js';
-import { fitSample } from './fit.js';
+import {
+  fitSample,
+  DEFAULT_HILL_MIN, DEFAULT_HILL_MAX,
+  UNCONSTRAINED_HILL_MIN, UNCONSTRAINED_HILL_MAX,
+  UNCONSTRAINED_CONC_MIN, UNCONSTRAINED_CONC_MAX,
+  DEFAULT_CONC_FACTOR_BELOW, DEFAULT_CONC_FACTOR_ABOVE,
+} from './fit.js';
 import { plotPerSample, plotOverlay, paletteFor, computeSharedRange } from './plots.js';
 
 const dropZone = document.getElementById('drop');
@@ -43,35 +49,266 @@ document.getElementById('universal-scale')?.addEventListener('change', () => {
 });
 
 let lastResults = null;
+let lastInput = null; // { x, samples } from the last successful parse — used for re-fit.
 let resizeObserver = null;
+
+// ----- Advanced settings: form ↔ localStorage ↔ fit options -----
+
+const STORAGE_PREFIX = 'bs.bounds.';
+const PARAMS = ['hill1', 'hill2', 'ec50', 'ic50'];
+
+function settingsRoot() { return document.getElementById('advanced-settings'); }
+
+function eachInput(cb) {
+  for (const param of PARAMS) {
+    const row = settingsRoot().querySelector(`.bounds-row[data-param="${param}"]`);
+    if (!row) continue;
+    cb(param, {
+      min: row.querySelector('input[data-bound="min"]'),
+      max: row.querySelector('input[data-bound="max"]'),
+      uncon: row.querySelector('input[data-bound="unconstrained"]'),
+      err: row.querySelector('[data-error]'),
+      row,
+    });
+  }
+}
+
+function loadSettingsToForm() {
+  eachInput((param, els) => {
+    const minVal = localStorage.getItem(STORAGE_PREFIX + param + '.min');
+    const maxVal = localStorage.getItem(STORAGE_PREFIX + param + '.max');
+    const uncon = localStorage.getItem(STORAGE_PREFIX + param + '.unconstrained') === '1';
+    els.min.value = minVal != null ? minVal : '';
+    els.max.value = maxVal != null ? maxVal : '';
+    els.uncon.checked = uncon;
+    els.min.disabled = uncon;
+    els.max.disabled = uncon;
+  });
+}
+
+function saveSettingsFromForm() {
+  eachInput((param, els) => {
+    const setOrClear = (suffix, value) => {
+      if (value === '' || value == null) localStorage.removeItem(STORAGE_PREFIX + param + '.' + suffix);
+      else localStorage.setItem(STORAGE_PREFIX + param + '.' + suffix, value);
+    };
+    setOrClear('min', els.min.value);
+    setOrClear('max', els.max.value);
+    if (els.uncon.checked) localStorage.setItem(STORAGE_PREFIX + param + '.unconstrained', '1');
+    else localStorage.removeItem(STORAGE_PREFIX + param + '.unconstrained');
+  });
+}
+
+function clearStoredSettings() {
+  for (const param of PARAMS) {
+    localStorage.removeItem(STORAGE_PREFIX + param + '.min');
+    localStorage.removeItem(STORAGE_PREFIX + param + '.max');
+    localStorage.removeItem(STORAGE_PREFIX + param + '.unconstrained');
+  }
+}
+
+function fmtBound(v) {
+  if (!Number.isFinite(v)) return '—';
+  const abs = Math.abs(v);
+  if (abs === 0) return '0';
+  if (abs >= 1e7 || abs < 1e-4) return v.toExponential(0).replace('e+', 'e').replace('e-', 'e-');
+  if (abs >= 1000) return v.toFixed(0);
+  if (abs >= 10) return v.toFixed(1).replace(/\.0$/, '');
+  if (abs >= 1) return v.toFixed(2).replace(/\.?0+$/, '');
+  return v.toPrecision(2).replace(/\.?0+$/, '');
+}
+
+function dataXBounds() {
+  if (!lastInput || !Array.isArray(lastInput.x)) return null;
+  const positive = lastInput.x.filter(v => v > 0 && Number.isFinite(v));
+  if (positive.length === 0) return null;
+  return { xMin: Math.min(...positive), xMax: Math.max(...positive) };
+}
+
+function effectiveBoundsText(param, els) {
+  const uncon = els.uncon.checked;
+  const isHill = param === 'hill1' || param === 'hill2';
+  const unit = isHill ? '' : ' nM';
+
+  if (uncon) {
+    const lo = isHill ? UNCONSTRAINED_HILL_MIN : UNCONSTRAINED_CONC_MIN;
+    const hi = isHill ? UNCONSTRAINED_HILL_MAX : UNCONSTRAINED_CONC_MAX;
+    return `using ${fmtBound(lo)} to ${fmtBound(hi)}${unit} (unconstrained)`;
+  }
+
+  const minRaw = els.min.value.trim();
+  const maxRaw = els.max.value.trim();
+  const minVal = minRaw ? Number(minRaw) : null;
+  const maxVal = maxRaw ? Number(maxRaw) : null;
+
+  const x = dataXBounds();
+  let defLo = null, defHi = null;
+  if (isHill) {
+    defLo = DEFAULT_HILL_MIN;
+    defHi = DEFAULT_HILL_MAX;
+  } else if (x) {
+    defLo = x.xMin / DEFAULT_CONC_FACTOR_BELOW;
+    defHi = x.xMax * DEFAULT_CONC_FACTOR_ABOVE;
+  }
+
+  if (defLo == null) return 'auto bounds depend on data — drop a file';
+
+  const lo = Number.isFinite(minVal) ? minVal : defLo;
+  const hi = Number.isFinite(maxVal) ? maxVal : defHi;
+  const minTag = minVal == null ? ' (auto)' : '';
+  const maxTag = maxVal == null ? ' (auto)' : '';
+  if (minTag && maxTag) return `using ${fmtBound(lo)} to ${fmtBound(hi)}${unit} (auto)`;
+  return `using ${fmtBound(lo)}${minTag} to ${fmtBound(hi)}${maxTag}${unit}`;
+}
+
+// Returns { valid: bool, options: {...}, message: string }
+function getCurrentSettings() {
+  const options = {};
+  let valid = true;
+  let firstMessage = '';
+  eachInput((param, els) => {
+    els.err.classList.remove('is-error');
+    els.min.classList.remove('invalid');
+    els.max.classList.remove('invalid');
+    const uncon = els.uncon.checked;
+    const minRaw = els.min.value.trim();
+    const maxRaw = els.max.value.trim();
+    const minVal = minRaw === '' ? null : Number(minRaw);
+    const maxVal = maxRaw === '' ? null : Number(maxRaw);
+
+    let err = '';
+    if (!uncon) {
+      if (minRaw !== '' && (!Number.isFinite(minVal) || minVal <= 0)) {
+        err = 'Min must be a positive number';
+        els.min.classList.add('invalid');
+      } else if (maxRaw !== '' && (!Number.isFinite(maxVal) || maxVal <= 0)) {
+        err = 'Max must be a positive number';
+        els.max.classList.add('invalid');
+      } else if (minVal != null && maxVal != null && maxVal <= minVal) {
+        err = 'Max must be greater than min';
+        els.min.classList.add('invalid');
+        els.max.classList.add('invalid');
+      }
+    }
+    if (err) {
+      els.err.textContent = err;
+      els.err.classList.add('is-error');
+      valid = false;
+      if (!firstMessage) firstMessage = `${param}: ${err}`;
+    } else {
+      els.err.textContent = effectiveBoundsText(param, els);
+    }
+    options[param] = {
+      min: uncon ? null : minVal,
+      max: uncon ? null : maxVal,
+      unconstrained: uncon,
+    };
+  });
+  return { valid, options, message: firstMessage };
+}
+
+function syncDisabledStateFromCheckboxes() {
+  eachInput((_param, els) => {
+    const uncon = els.uncon.checked;
+    els.min.disabled = uncon;
+    els.max.disabled = uncon;
+  });
+}
+
+function refreshRefitButton() {
+  const btn = document.getElementById('refit-btn');
+  const status = document.getElementById('advanced-status');
+  if (!btn) return;
+  const { valid, message } = getCurrentSettings();
+  const hasData = !!(lastInput && lastInput.samples && lastInput.samples.length);
+  btn.disabled = !(valid && hasData);
+  if (!hasData) {
+    status.textContent = 'Drop a file to enable re-fitting.';
+    status.classList.remove('success');
+  } else if (!valid) {
+    status.textContent = message || 'Fix invalid bounds.';
+    status.classList.remove('success');
+  } else {
+    status.textContent = '';
+    status.classList.remove('success');
+  }
+}
+
+function wireSettingsEventListeners() {
+  eachInput((_param, els) => {
+    const onChange = () => {
+      syncDisabledStateFromCheckboxes();
+      saveSettingsFromForm();
+      refreshRefitButton();
+    };
+    els.min.addEventListener('input', onChange);
+    els.max.addEventListener('input', onChange);
+    els.uncon.addEventListener('change', onChange);
+  });
+  document.getElementById('reset-bounds-btn')?.addEventListener('click', () => {
+    clearStoredSettings();
+    loadSettingsToForm();
+    refreshRefitButton();
+    const status = document.getElementById('advanced-status');
+    if (status) {
+      status.textContent = 'Reset to defaults.';
+      status.classList.add('success');
+    }
+  });
+  document.getElementById('refit-btn')?.addEventListener('click', () => {
+    if (!lastInput) return;
+    const { valid, options } = getCurrentSettings();
+    if (!valid) return;
+    runFitsAndRender(lastInput.x, lastInput.samples, options);
+    const status = document.getElementById('advanced-status');
+    if (status) {
+      status.textContent = 'Re-fitted with current settings.';
+      status.classList.add('success');
+      setTimeout(() => { status.classList.remove('success'); status.textContent = ''; }, 3000);
+    }
+  });
+}
+
+function runFitsAndRender(x, samples, options) {
+  const results = samples.map((s) => {
+    const xFlat = [], yFlat = [];
+    for (const rep of s.replicates) {
+      for (let i = 0; i < x.length; i++) {
+        const xi = x[i], yi = rep[i];
+        if (Number.isFinite(xi) && xi > 0 && Number.isFinite(yi)) {
+          xFlat.push(xi);
+          yFlat.push(yi);
+        }
+      }
+    }
+    return {
+      name: s.name,
+      x,
+      replicates: s.replicates,
+      fit: fitSample(xFlat, yFlat, options),
+    };
+  });
+  lastResults = results;
+  renderResults(results);
+}
 
 async function handleFile(file) {
   hideError();
   try {
     const { x, samples } = await parseXlsx(file);
+    lastInput = { x, samples };
     showPreview(x, samples);
     document.getElementById('info').classList.remove('hidden');
 
-    const results = samples.map((s) => {
-      const xFlat = [], yFlat = [];
-      for (const rep of s.replicates) {
-        for (let i = 0; i < x.length; i++) {
-          const xi = x[i], yi = rep[i];
-          if (Number.isFinite(xi) && xi > 0 && Number.isFinite(yi)) {
-            xFlat.push(xi);
-            yFlat.push(yi);
-          }
-        }
-      }
-      return {
-        name: s.name,
-        x,
-        replicates: s.replicates,
-        fit: fitSample(xFlat, yFlat),
-      };
-    });
-    lastResults = results;
-    renderResults(results);
+    const { valid, options } = getCurrentSettings();
+    if (!valid) {
+      // Should not normally hit because the user can't fix bounds before
+      // dropping a file in any meaningful way, but be defensive.
+      showError('Advanced settings have invalid bounds. Open the Advanced settings panel to correct them.');
+      return;
+    }
+    runFitsAndRender(x, samples, options);
+    refreshRefitButton();
   } catch (err) {
     showError(err && err.message ? err.message : String(err));
     console.error(err);
@@ -108,7 +345,7 @@ function renderResults(results) {
   const cols = [
     'Sample', 'N pts', 'Xpeak (nM)', 'Width (nM)', 'Width (fold)',
     'Bottom', 'Top', 'EC50 (apparent)', 'IC50 (apparent)',
-    'Hill1', 'Hill2', 'R²', 'Conv?', 'At bound',
+    'Hill1', 'Hill2', 'R²', 'Conv?', 'Flags',
   ];
   let html = '<div class="table-wrap"><table><thead><tr>';
   cols.forEach((c) => { html += `<th>${c}</th>`; });
@@ -116,14 +353,19 @@ function renderResults(results) {
   results.forEach((r) => {
     const f = r.fit;
     const boundaryHits = f.boundaryHits || [];
-    const flagged = !f.converged || boundaryHits.length > 0 || !(f.r2 > 0.8);
-    const tip = flagged
-      ? ` title="Flagged: ${[
-          !f.converged ? 'did not converge' : null,
-          boundaryHits.length > 0 ? `parameter(s) at bound: ${boundaryHits.join(', ')}` : null,
-          !(f.r2 > 0.8) ? `low R² (${fmtR2(f.r2)})` : null,
-        ].filter(Boolean).join('; ')}"`
-      : '';
+    const r2Low = !(f.r2 > 0.8);
+    const constraintBad = f.params && Number.isFinite(f.params.IC50) && Number.isFinite(f.params.EC50) && f.params.IC50 <= f.params.EC50;
+    const flagParts = [
+      !f.converged ? 'no convergence' : null,
+      ...boundaryHits.map(b => `${b} at bound`),
+      r2Low ? `low R² (${fmtR2(f.r2)})` : null,
+      constraintBad ? 'IC50 ≤ EC50' : null,
+    ].filter(Boolean);
+    const flagged = flagParts.length > 0;
+    const flagsHtml = flagged
+      ? `<span style="color:#c00">${esc(flagParts.join('; '))}</span>`
+      : '—';
+    const tip = flagged ? ` title="${esc(flagParts.join('; '))}"` : '';
     const nReps = (r.replicates || []).length;
     const nPtsCell = `${f.nPoints != null ? f.nPoints : '—'}` + (nReps > 1 ? ` <span style="color:#888">(${nReps} reps)</span>` : '');
     html += `<tr class="${flagged ? 'flagged' : ''}"${tip}>`;
@@ -140,7 +382,7 @@ function renderResults(results) {
     html += `<td>${withSE(f.params.Hill2, f.errors && f.errors.Hill2)}</td>`;
     html += `<td>${fmtR2(f.r2)}</td>`;
     html += `<td>${f.converged ? '✓' : '✗'}</td>`;
-    html += `<td>${boundaryHits.length === 0 ? '—' : '<span style="color:#c00">' + esc(boundaryHits.join(', ')) + '</span>'}</td>`;
+    html += `<td>${flagsHtml}</td>`;
     html += '</tr>';
   });
   html += '</tbody></table></div>';
@@ -300,3 +542,10 @@ function showError(msg) {
 function hideError() {
   document.getElementById('error').classList.add('hidden');
 }
+
+// ----- Bootstrap -----
+
+loadSettingsToForm();
+syncDisabledStateFromCheckboxes();
+wireSettingsEventListeners();
+refreshRefitButton();
