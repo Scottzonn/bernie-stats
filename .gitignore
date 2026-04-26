@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Claude Code local state
+.claude/
+
+# Local data and backups (don't ship test/real assay data publicly)
+*.xlsx
+*.xls
+*.zip

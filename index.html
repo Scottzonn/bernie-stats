@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bernie Stats — Bell Curve Fitter</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>Bell Curve Fitter</h1>
+    <p class="subtitle">Ternary complex / AlphaLISA dose–response analysis. Drop an .xlsx file to fit and rank.</p>
+  </header>
+
+  <section id="drop" class="dropzone">
+    <p><strong>Drop an .xlsx file here</strong> or click to choose.</p>
+    <p style="font-size:13px;color:#777;margin-top:6px;">Column A = compound concentration (nM). Columns B+ = signal per sample, with the sample name in the row immediately above the first numeric row. Columns sharing the <strong>same sample name</strong> are treated as replicates and fit together.</p>
+    <input type="file" id="file" accept=".xlsx,.xls" hidden>
+  </section>
+
+  <section id="error" class="error hidden"></section>
+
+  <section id="info" class="info hidden">
+    <details>
+      <summary>How to read these results</summary>
+      <p><strong>Xpeak</strong> is the concentration giving maximum ternary complex formation — this is the headline ranking number. It is computed numerically from the fitted curve.</p>
+      <p><strong>EC50 (apparent)</strong> and <strong>IC50 (apparent)</strong> are <em>empirical fit parameters</em> describing where the curve rises and where it falls. They are <strong>not</strong> binding constants (Kd) — they should not be reported as such.</p>
+      <p><strong>Width (nM)</strong> is the linear distance between the two inflection points (IC50 − EC50). <strong>Width (fold)</strong> is the same gap as a fold ratio (IC50 / EC50) — scale-invariant and easier to compare across compounds with very different potencies.</p>
+      <p><strong>Hill1, Hill2</strong> are slope parameters for the rising and falling sides of the bell. <strong>R²</strong> is goodness-of-fit on the supplied data points — note that with few data points and 6 free parameters, R² can sit very close to 1 even when the parameters are uncertain. The real diagnostics are the standard errors and the <strong>At bound</strong> column.</p>
+      <p>Rows highlighted in pink indicate likely-bad fits: failed convergence, low R², or one or more parameters pinned at a bound (e.g. Hill = 4 means the optimizer wanted a steeper slope than the model permits).</p>
+      <p>The model fitted is a product of two sigmoids (ascending × hook) with IC50 &gt; EC50 enforced — fitted independently per sample with no shared parameters. The optimizer runs from 10 different starting points and keeps the best fit, so noisy data is much less likely to cause a stuck or unstable result.</p>
+      <p><strong>Replicates:</strong> if multiple columns share the same sample name (e.g. columns B, C, D all named "Compound A"), they are treated as <em>replicates of the same sample</em> and fit together as a single curve. This is much more stable than fitting each replicate separately. The "N pts" column shows how many individual data points each fit used.</p>
+    </details>
+  </section>
+
+  <section id="preview" class="hidden">
+    <h2>Data preview</h2>
+    <div id="preview-table" class="table-wrap"></div>
+  </section>
+
+  <section id="results" class="hidden">
+    <h2>Fit results</h2>
+    <div id="params-table"></div>
+    <button id="download-csv">Download results CSV</button>
+
+    <h2>Per-sample fits <label class="scale-toggle"><input type="checkbox" id="universal-scale" checked> Universal scale</label></h2>
+    <div class="model-ref">
+      <div class="model-ref-name"><strong>Model:</strong> bell-shaped dose–response — product of two Hill sigmoids (one ascending for ternary complex formation, one descending for the high-concentration hook). Each sample below is fit independently with this equation.</div>
+      <div class="model-ref-eq">
+        Y(X) = Bottom + (Top − Bottom) · [ (X / EC50)<sup>Hill1</sup> / (1 + (X / EC50)<sup>Hill1</sup>) ] · [ 1 / (1 + (X / IC50)<sup>Hill2</sup>) ]
+      </div>
+      <div class="model-ref-note">Six free parameters per curve: <code>Bottom, Top, EC50, IC50, Hill1, Hill2</code>. Fitted by Levenberg–Marquardt nonlinear least squares with the constraint <code>IC50 &gt; EC50</code> enforced.</div>
+    </div>
+    <div id="per-sample-plots" class="grid"></div>
+
+    <h2>All samples overlay</h2>
+    <div id="overlay-plot"></div>
+  </section>
+</main>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
