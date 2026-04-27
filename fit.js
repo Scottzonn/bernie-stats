@@ -166,10 +166,10 @@ export function fitSample(xRaw, yRaw, options) {
     arr.push(ys[i]);
     meansByX.set(xs[i], arr);
   }
-  let peakX = xs[0], peakY = -Infinity;
+  let peakX = xs[0], dataPeakY = -Infinity;
   for (const [x, arr] of meansByX) {
     const m = arr.reduce((s, v) => s + v, 0) / arr.length;
-    if (m > peakY) { peakY = m; peakX = x; }
+    if (m > dataPeakY) { dataPeakY = m; peakX = x; }
   }
 
   const yScale = yMax > 0 ? yMax : 1;
@@ -241,23 +241,38 @@ export function fitSample(xRaw, yRaw, options) {
   const ssTot = ys.reduce((s, v) => s + (v - yMean) ** 2, 0);
   const r2 = ssTot > 0 ? 1 - ssRes / ssTot : NaN;
 
-  const xpeak = findPeak(fitted, xMin, xMax);
+  const { xpeak, peakY, halfY, apparentEC50, apparentIC50 } = peakAndApparentMidpoints(fitted, xMin, xMax);
   const boundaryHits = detectBoundaryHits(result.parameterValues, minValues, maxValues, unconstrainedMask);
   const params = paramsObj(fitted);
   const constraintOk = params.IC50 > params.EC50;
   const errors = computeStandardErrors(fitted, xs, ys);
 
-  const widthLinear = Number.isFinite(params.IC50) && Number.isFinite(params.EC50) ? params.IC50 - params.EC50 : NaN;
-  const widthFold = Number.isFinite(params.IC50) && Number.isFinite(params.EC50) && params.EC50 > 0 ? params.IC50 / params.EC50 : NaN;
+  // Width is computed from apparent midpoints (half-peak crossings of the
+  // fitted curve), not the raw model EC50/IC50. The product-of-sigmoids model
+  // has a parameter degeneracy where the optimizer can land in a regime where
+  // model EC50 and IC50 swap roles and Top inflates to compensate; the curve
+  // still fits but the model labels stop matching the visible rise/fall
+  // midpoints. Apparent values come straight off the curve so they always
+  // satisfy apparentIC50 > apparentEC50.
+  const widthLinear = Number.isFinite(apparentIC50) && Number.isFinite(apparentEC50) ? apparentIC50 - apparentEC50 : NaN;
+  const widthFold = Number.isFinite(apparentIC50) && Number.isFinite(apparentEC50) && apparentEC50 > 0 ? apparentIC50 / apparentEC50 : NaN;
+
+  // Top wildly above the data peak is the smoking gun for the degenerate regime.
+  const topInflated = Number.isFinite(params.Top) && Number.isFinite(peakY) && peakY > 0 && params.Top > 2 * peakY;
 
   return {
     params,
     xpeak,
+    peakY,
+    halfY,
+    apparentEC50,
+    apparentIC50,
     widthLinear,
     widthFold,
     r2,
     converged: converged && Number.isFinite(r2),
     constraintOk,
+    topInflated,
     errors,
     reason,
     boundaryHits,
@@ -310,18 +325,54 @@ function detectBoundaryHits(params, minVals, maxVals, unconstrainedMask) {
   return hits;
 }
 
-function findPeak(params, xMin, xMax) {
+// Sample the fitted curve on a log grid spanning ~2 decades beyond the data.
+// Returns:
+//   xpeak       — concentration of curve maximum
+//   peakY       — fitted Y at xpeak
+//   halfY       — Bottom + (peakY - Bottom) / 2  (the half-peak threshold)
+//   apparentEC50 — x where the rising arm of the fitted curve crosses halfY
+//   apparentIC50 — x where the falling arm of the fitted curve crosses halfY
+// "Apparent" values are read directly off the fitted curve and are always
+// well-defined regardless of which regime the optimizer landed in. They can
+// disagree with raw model EC50/IC50 when Top is degenerate.
+function peakAndApparentMidpoints(params, xMin, xMax) {
   const N = 5000;
-  const lo = Math.log(Math.max(xMin / 10, 1e-12));
-  const hi = Math.log(xMax * 10);
+  const lo = Math.log(Math.max(xMin / 100, 1e-12));
+  const hi = Math.log(xMax * 100);
   const f = bellModel(params);
-  let bestX = NaN, bestY = -Infinity;
+  const xs = new Array(N);
+  const ys = new Array(N);
+  let peakIdx = 0, peakY = -Infinity;
   for (let i = 0; i < N; i++) {
     const xv = Math.exp(lo + (hi - lo) * (i / (N - 1)));
     const yv = f(xv);
-    if (Number.isFinite(yv) && yv > bestY) { bestY = yv; bestX = xv; }
+    xs[i] = xv;
+    ys[i] = yv;
+    if (Number.isFinite(yv) && yv > peakY) { peakY = yv; peakIdx = i; }
   }
-  return bestX;
+  const xpeak = xs[peakIdx];
+  const Bottom = params[0];
+  const halfY = Bottom + (peakY - Bottom) / 2;
+
+  // Rising arm: walk left from peak, find first interval bracketing halfY.
+  let apparentEC50 = NaN;
+  for (let i = peakIdx; i > 0; i--) {
+    if (ys[i] >= halfY && ys[i - 1] < halfY) {
+      const t = (halfY - ys[i - 1]) / (ys[i] - ys[i - 1]);
+      apparentEC50 = Math.exp(Math.log(xs[i - 1]) + t * (Math.log(xs[i]) - Math.log(xs[i - 1])));
+      break;
+    }
+  }
+  // Falling arm: walk right from peak.
+  let apparentIC50 = NaN;
+  for (let i = peakIdx; i < N - 1; i++) {
+    if (ys[i] >= halfY && ys[i + 1] < halfY) {
+      const t = (ys[i] - halfY) / (ys[i] - ys[i + 1]);
+      apparentIC50 = Math.exp(Math.log(xs[i]) + t * (Math.log(xs[i + 1]) - Math.log(xs[i])));
+      break;
+    }
+  }
+  return { xpeak, peakY, halfY, apparentEC50, apparentIC50 };
 }
 
 function computeStandardErrors(params, xs, ys) {

@@ -343,8 +343,11 @@ function showPreview(x, samples) {
 function renderResults(results) {
   const ptable = document.getElementById('params-table');
   const cols = [
-    'Sample', 'N pts', 'Xpeak (nM)', 'Width (nM)', 'Width (fold)',
-    'Bottom', 'Top', 'EC50 (apparent)', 'IC50 (apparent)',
+    'Sample', 'N pts', 'Xpeak (nM)',
+    'EC50 (apparent)', 'IC50 (apparent)',
+    'Width (nM)', 'Width (fold)',
+    'Bottom', 'Top',
+    'EC50 (model)', 'IC50 (model)',
     'Hill1', 'Hill2', 'R²', 'Conv?', 'Flags',
   ];
   let html = '<div class="table-wrap"><table><thead><tr>';
@@ -354,12 +357,11 @@ function renderResults(results) {
     const f = r.fit;
     const boundaryHits = f.boundaryHits || [];
     const r2Low = !(f.r2 > 0.8);
-    const constraintBad = f.params && Number.isFinite(f.params.IC50) && Number.isFinite(f.params.EC50) && f.params.IC50 <= f.params.EC50;
     const flagParts = [
       !f.converged ? 'no convergence' : null,
       ...boundaryHits.map(b => `${b} at bound`),
       r2Low ? `low R² (${fmtR2(f.r2)})` : null,
-      constraintBad ? 'IC50 ≤ EC50' : null,
+      f.topInflated ? 'degenerate fit (Top ≫ peak; model EC50/IC50 unreliable, use apparent)' : null,
     ].filter(Boolean);
     const flagged = flagParts.length > 0;
     const flagsHtml = flagged
@@ -372,6 +374,8 @@ function renderResults(results) {
     html += `<td>${esc(r.name)}</td>`;
     html += `<td>${nPtsCell}</td>`;
     html += `<td><strong>${fmt(f.xpeak)}</strong></td>`;
+    html += `<td>${fmt(f.apparentEC50)}</td>`;
+    html += `<td>${fmt(f.apparentIC50)}</td>`;
     html += `<td>${fmt(f.widthLinear)}</td>`;
     html += `<td>${fmtFold(f.widthFold)}</td>`;
     html += `<td>${withSE(f.params.Bottom, f.errors && f.errors.Bottom)}</td>`;

@@ -78,10 +78,13 @@ export async function parseXlsx(file) {
 export function exportCsv(results) {
   const cols = [
     'Sample', 'N_replicates', 'N_points',
-    'Xpeak_nM', 'Width_nM', 'Width_fold',
-    'Bottom', 'Top', 'EC50_apparent', 'IC50_apparent',
+    'Xpeak_nM',
+    'EC50_apparent_nM', 'IC50_apparent_nM',
+    'Width_nM', 'Width_fold',
+    'Bottom', 'Top',
+    'EC50_model_nM', 'IC50_model_nM',
     'Hill1', 'Hill2', 'R2', 'Converged', 'Flags',
-    'Bottom_SE', 'Top_SE', 'EC50_SE', 'IC50_SE', 'Hill1_SE', 'Hill2_SE',
+    'Bottom_SE', 'Top_SE', 'EC50_model_SE', 'IC50_model_SE', 'Hill1_SE', 'Hill2_SE',
   ];
   const rows = [cols.join(',')];
   results.forEach(r => {
@@ -89,20 +92,22 @@ export function exportCsv(results) {
     const p = f.params;
     const e = f.errors || {};
     const r2Low = !(f.r2 > 0.8);
-    const constraintBad = p && Number.isFinite(p.IC50) && Number.isFinite(p.EC50) && p.IC50 <= p.EC50;
     const flagParts = [
       !f.converged ? 'no convergence' : null,
       ...((f.boundaryHits || []).map(b => `${b} at bound`)),
       r2Low ? `low R2` : null,
-      constraintBad ? 'IC50 <= EC50' : null,
+      f.topInflated ? 'degenerate fit (Top >> peak)' : null,
     ].filter(Boolean);
     const flagsField = flagParts.length ? flagParts.join('; ') : '';
     const cells = [
       csvCell(r.name),
       r.replicates ? r.replicates.length : 1,
       f.nPoints != null ? f.nPoints : '',
-      num(f.xpeak), num(f.widthLinear), num(f.widthFold),
-      num(p.Bottom), num(p.Top), num(p.EC50), num(p.IC50),
+      num(f.xpeak),
+      num(f.apparentEC50), num(f.apparentIC50),
+      num(f.widthLinear), num(f.widthFold),
+      num(p.Bottom), num(p.Top),
+      num(p.EC50), num(p.IC50),
       num(p.Hill1), num(p.Hill2), num(f.r2),
       f.converged ? 1 : 0, csvCell(flagsField),
       num(e.Bottom), num(e.Top), num(e.EC50), num(e.IC50), num(e.Hill1), num(e.Hill2),

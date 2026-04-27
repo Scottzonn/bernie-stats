@@ -5,10 +5,53 @@ const COLORS = [
   '#9467bd', '#8c564b', '#e377c2', '#17becf',
 ];
 
+// Lines drawn at apparent EC50 and IC50 use a fixed pair so they read the
+// same on every plot regardless of the sample's data colour.
+const EC50_LINE_COLOR = '#2ca02c'; // green — rising side
+const IC50_LINE_COLOR = '#d62728'; // red   — falling side
+
 function logSpacedRange(xMin, xMax, n) {
   const lo = Math.log(Math.max(xMin / 3, 1e-12));
   const hi = Math.log(xMax * 3);
   return Array.from({ length: n }, (_, i) => Math.exp(lo + (hi - lo) * (i / (n - 1))));
+}
+
+// Build a Plotly log-axis config with explicit decade ticks rendered as plain
+// decimals (0.01, 0.1, 1, 10, 100…) instead of "1e-2" etc. xLogRange is the
+// optional shared visible range in log10 units; otherwise tick range is
+// derived from xMin/xMax in linear units.
+function logXAxisConfig(xMin, xMax, xLogRange) {
+  const log10Min = xLogRange ? xLogRange[0] : Math.log10(xMin / 3);
+  const log10Max = xLogRange ? xLogRange[1] : Math.log10(xMax * 3);
+  const decadeLo = Math.floor(log10Min);
+  const decadeHi = Math.ceil(log10Max);
+  const tickvals = [];
+  const ticktext = [];
+  for (let k = decadeLo; k <= decadeHi; k++) {
+    const v = Math.pow(10, k);
+    tickvals.push(v);
+    ticktext.push(formatTick(v));
+  }
+  return {
+    type: 'log',
+    title: { text: 'Concentration (nM)' },
+    tickmode: 'array',
+    tickvals,
+    ticktext,
+    ticks: 'outside',
+    minor: { ticks: 'outside', ticklen: 3, tickcolor: '#bbb' },
+    showgrid: true,
+    gridcolor: '#eee',
+  };
+}
+
+// Format a positive number for axis ticks: keep things short and avoid
+// scientific notation across the typical assay range (1e-3 .. 1e6 nM).
+function formatTick(v) {
+  if (!(v > 0)) return String(v);
+  if (v >= 1) return v >= 10000 ? v.toExponential(0) : String(v);
+  // 0.001, 0.01, 0.1
+  return v.toString();
 }
 
 // Flatten a sample's replicates into parallel x/y arrays of all individual data points.
@@ -38,6 +81,7 @@ export function plotPerSample(divId, result, color, sharedRange) {
   const yCurve = evalCurve(fit.params, xCurve);
 
   const nReps = (result.replicates || []).length;
+  const dataHover = '<b>%{x:~r} nM</b><br>Signal: %{y:.0f}<extra></extra>';
   const traces = [
     {
       x: xs, y: ys,
@@ -45,6 +89,7 @@ export function plotPerSample(divId, result, color, sharedRange) {
       type: 'scatter',
       name: nReps > 1 ? `Data (${nReps} reps)` : 'Data',
       marker: { size: 9, color, opacity: nReps > 1 ? 0.7 : 1 },
+      hovertemplate: dataHover,
     },
     {
       x: xCurve, y: yCurve,
@@ -52,6 +97,7 @@ export function plotPerSample(divId, result, color, sharedRange) {
       type: 'scatter',
       name: 'Fit',
       line: { width: 2, color },
+      hovertemplate: dataHover,
     },
   ];
   if (Number.isFinite(fit.xpeak)) {
@@ -61,14 +107,43 @@ export function plotPerSample(divId, result, color, sharedRange) {
       mode: 'markers',
       type: 'scatter',
       name: `Xpeak ≈ ${formatConc(fit.xpeak)} nM`,
-      marker: { size: 14, symbol: 'x', color: '#d62728', line: { width: 2 } },
+      marker: { size: 14, symbol: 'x', color: '#000', line: { width: 2 } },
+      hovertemplate: '<b>Xpeak %{x:~r} nM</b><br>Signal: %{y:.0f}<extra></extra>',
+    });
+  }
+
+  // Vertical lines at apparent EC50 / IC50 (half-peak crossings of the fitted
+  // curve). Drawn from the plot's bottom (Bottom param or 0) up through the
+  // fitted peak so they intercept the x-axis without inflating the y-axis.
+  const lineYBase = Number.isFinite(fit.params && fit.params.Bottom) ? fit.params.Bottom : 0;
+  const lineYTop = Number.isFinite(fit.peakY) ? fit.peakY : Math.max(...ys);
+  if (Number.isFinite(fit.apparentEC50)) {
+    traces.push({
+      x: [fit.apparentEC50, fit.apparentEC50],
+      y: [lineYBase, lineYTop],
+      mode: 'lines',
+      type: 'scatter',
+      name: `EC50 (apparent) ≈ ${formatConc(fit.apparentEC50)} nM`,
+      line: { color: EC50_LINE_COLOR, width: 2, dash: 'dash' },
+      hovertemplate: `<b>EC50 (apparent)</b><br>%{x:~r} nM<extra></extra>`,
+    });
+  }
+  if (Number.isFinite(fit.apparentIC50)) {
+    traces.push({
+      x: [fit.apparentIC50, fit.apparentIC50],
+      y: [lineYBase, lineYTop],
+      mode: 'lines',
+      type: 'scatter',
+      name: `IC50 (apparent) ≈ ${formatConc(fit.apparentIC50)} nM`,
+      line: { color: IC50_LINE_COLOR, width: 2, dash: 'dash' },
+      hovertemplate: `<b>IC50 (apparent)</b><br>%{x:~r} nM<extra></extra>`,
     });
   }
 
   // sharedRange = null  → autoscale per plot.
   // sharedRange = { xLogRange:[a,b], yRange:[a,b] } → fixed axes for cross-plot comparison.
-  const xaxis = { type: 'log', title: 'Concentration (nM)' };
-  const yaxis = { title: 'Signal' };
+  const xaxis = logXAxisConfig(xMin, xMax, sharedRange && sharedRange.xLogRange);
+  const yaxis = { title: { text: 'Signal' } };
   if (sharedRange && sharedRange.xLogRange && sharedRange.yRange) {
     xaxis.range = sharedRange.xLogRange.slice();
     yaxis.range = sharedRange.yRange.slice();
@@ -81,9 +156,10 @@ export function plotPerSample(divId, result, color, sharedRange) {
     title: { text: name, font: { size: 14 } },
     xaxis,
     yaxis,
-    margin: { t: 40, l: 64, r: 16, b: 50 },
-    legend: { orientation: 'h', y: -0.2 },
+    margin: { t: 40, l: 64, r: 16, b: 60 },
+    legend: { orientation: 'h', y: -0.25 },
     showlegend: true,
+    hovermode: 'closest',
   }, { responsive: true, displaylogo: false });
 }
 
@@ -132,6 +208,7 @@ export function plotOverlay(divId, results) {
   results.forEach((r, i) => {
     const color = COLORS[i % COLORS.length];
     const { xs, ys } = allPointsFor(r);
+    const hover = `<b>${esc(r.name)}</b><br>%{x:~r} nM<br>Signal: %{y:.0f}<extra></extra>`;
     traces.push({
       x: xs, y: ys,
       mode: 'markers',
@@ -139,6 +216,7 @@ export function plotOverlay(divId, results) {
       name: r.name,
       legendgroup: r.name,
       marker: { size: 8, color, opacity: 0.7 },
+      hovertemplate: hover,
     });
     const yCurve = evalCurve(r.fit.params, xCurve);
     traces.push({
@@ -149,6 +227,7 @@ export function plotOverlay(divId, results) {
       legendgroup: r.name,
       showlegend: false,
       line: { color, width: 2 },
+      hovertemplate: hover,
     });
     if (Number.isFinite(r.fit.xpeak)) {
       const yPeak = evalCurve(r.fit.params, [r.fit.xpeak])[0];
@@ -160,15 +239,17 @@ export function plotOverlay(divId, results) {
         legendgroup: r.name,
         showlegend: false,
         marker: { size: 12, symbol: 'x', color },
+        hovertemplate: `<b>${esc(r.name)} — Xpeak</b><br>%{x:~r} nM<br>Signal: %{y:.0f}<extra></extra>`,
       });
     }
   });
 
   Plotly.newPlot(divId, traces, {
     title: { text: 'All samples (Xpeak marked with ✕)', font: { size: 15 } },
-    xaxis: { type: 'log', title: 'Concentration (nM)' },
-    yaxis: { title: 'Signal' },
-    margin: { t: 50, l: 64, r: 16, b: 50 },
+    xaxis: logXAxisConfig(xMin, xMax),
+    yaxis: { title: { text: 'Signal' } },
+    margin: { t: 50, l: 64, r: 16, b: 60 },
+    hovermode: 'closest',
   }, { responsive: true, displaylogo: false });
 }
 
@@ -182,4 +263,8 @@ function formatConc(v) {
   if (v >= 10) return v.toFixed(1);
   if (v >= 1) return v.toFixed(2);
   return v.toPrecision(3);
+}
+
+function esc(s) {
+  return String(s).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 }
